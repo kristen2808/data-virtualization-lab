@@ -1,0 +1,35 @@
+services:
+  trino:
+    container_name: trino
+    image: trinodb/trino:484
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./trino/catalog/pg_lab.properties:/etc/trino/catalog/pg_lab.properties:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    container_name: trino-postgre
+    image: postgres:17.11-bookworm
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_DB: lab_db
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:
