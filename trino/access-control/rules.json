@@ -1,0 +1,40 @@
+{
+  "catalogs": [
+    {"user": "^admin$", "catalog": ".*", "allow": "owner"},
+    {"user": "^analyst$", "catalog": "^pg_lab$", "allow": "read-only"},
+    {"user": "^analyst$", "catalog": "^system$", "allow": "read-only"},
+    {"catalog": ".*", "allow": "none"}
+  ],
+  "schemas": [
+    {"user": "^admin$", "owner": true}
+  ],
+  "tables": [
+    {"user": "^admin$", "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE", "OWNERSHIP", "GRANT_SELECT"]},
+    {"user": "^analyst$", "catalog": "^pg_lab$", "schema": "^public$", "privileges": ["SELECT"]},
+    {"user": "^analyst$", "catalog": "^system$", "schema": "^jdbc$", "privileges": ["SELECT"]}
+  ],
+  "queries": [
+    {"user": "^admin$", "allow": ["execute", "view", "kill"]},
+    {"user": "^analyst$", "queryOwner": "^analyst$", "allow": ["view", "kill"]},
+    {"user": "^analyst$", "allow": ["execute"]}
+  ],
+  "functions": [
+    {"user": "^admin$", "privileges": ["EXECUTE", "GRANT_EXECUTE", "OWNERSHIP"]}
+  ],
+  "procedures": [
+    {"user": "^admin$", "privileges": ["EXECUTE", "GRANT_EXECUTE"]}
+  ],
+  "system_session_properties": [
+    {"user": "^admin$", "allow": true}
+  ],
+  "catalog_session_properties": [
+    {"user": "^admin$", "allow": true}
+  ],
+  "system_information": [
+    {"user": "^admin$", "allow": ["read", "write"]}
+  ],
+  "authorization": [
+    {"original_user": "^admin$", "new_user": ".*", "new_role": ".*", "allow": true}
+  ],
+  "impersonation": []
+}

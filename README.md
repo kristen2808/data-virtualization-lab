@@ -4,7 +4,12 @@ Requirements: a running Docker Engine and Docker Compose v2.
 
 The `trino` service uses the official `trinodb/trino:484` image and a container
 named `trino`. The default image configuration runs both the coordinator
-and worker in a single container. Port 8080 is available only on localhost.
+and worker in a single container. HTTPS port 8443 is available only on
+localhost. Internal HTTP port 8080 is not published.
+`trino/config.properties` preserves discovery and catalog defaults and enables
+HTTPS with PASSWORD authentication and file-based system access control.
+`admin` has the broadest configured administrative permissions; `analyst`
+can only SELECT from `pg_lab.public`, read JDBC metadata, and manage own queries.
 
 The `postgres` service uses a container named `trino-postgre`, the official
 `postgres:17.11-bookworm` image, the `lab_db` database, and the named
@@ -27,6 +32,85 @@ and optionally change the username. Git ignores this file; never commit it.
 For passwords containing `$` or `#`, use single quotes in `.env` to preserve
 the literal value. Do not put real passwords in other project files.
 
+Before the first start, generate a local self-signed certificate with OpenSSL
+supporting `-addext`. Do not repeat this step unless you intend to replace the
+certificate (valid for 365 days):
+
+```sh
+mkdir -p secrets/trino
+chmod 700 secrets secrets/trino
+(
+  umask 077
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+    -out secrets/trino/localhost.key
+  openssl req -new -x509 -sha256 -days 365 \
+    -key secrets/trino/localhost.key -out secrets/trino/localhost.crt \
+    -subj '/CN=localhost' \
+    -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+    -addext 'extendedKeyUsage=serverAuth'
+  cat secrets/trino/localhost.key secrets/trino/localhost.crt \
+    > secrets/trino/localhost.pem
+)
+chmod 644 secrets/trino/localhost.pem
+```
+
+Git ignores `secrets/`. The directories have mode `700`, protecting the key
+and combined PEM from other host users. The PEM has mode `644` so the
+container's Trino user (UID 1000) can read the individual read-only bind mount;
+the containing host directories remain private. The separate key has mode `600`.
+Never commit or share the combined PEM or private key.
+
+## Configure password authentication
+
+The file authenticator is configured in `trino/password-authenticator.properties`.
+Its password database and internal shared secret are stored only in ignored
+`secrets/trino/` files. For a new checkout, create them without overwriting any
+existing files:
+
+```sh
+python3 - <<'PYSETUP'
+import os
+import secrets
+from pathlib import Path
+root = Path('secrets/trino')
+root.mkdir(parents=True, exist_ok=True)
+Path('secrets').chmod(0o700)
+root.chmod(0o700)
+for name in ('internal.env', 'password.db'):
+    try:
+        fd = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        continue
+    with os.fdopen(fd, 'w') as f:
+        if name == 'internal.env':
+            f.write('TRINO_INTERNAL_SHARED_SECRET=' + secrets.token_hex(64) + '\n')
+PYSETUP
+```
+
+Check that `htpasswd` supports bcrypt (`-B`) and cost (`-C`). On macOS it is
+normally available at `/usr/sbin/htpasswd`. If unavailable, install Apache's
+`htpasswd` utility from a trusted package source before continuing.
+
+Enter distinct passwords interactively; do not put passwords in command arguments
+or chat. These commands add users to the initially empty database, or update
+only the named user in an existing database. Confirm an intended password change
+before running them against an existing account. Do not use `-b` or `-c`.
+Use a password manager; keep bcrypt passwords within 72 bytes.
+
+```sh
+htpasswd -B -C 12 secrets/trino/password.db admin
+htpasswd -B -C 12 secrets/trino/password.db analyst
+chmod 644 secrets/trino/password.db
+```
+
+The password database contains bcrypt hashes and is mounted read-only. Mode
+`644` permits the container's UID 1000 to read the individual bind mount;
+the host directories remain private (`700`). `internal.env` remains `600`.
+Anyone with Docker administrative access can access container secrets.
+Never print expanded Compose configuration, container environment, or these files.
+The shared secret authenticates internal node communication; it is not a user
+password. Do not change it unnecessarily.
+
 Validate the configuration without printing its values, then start the services:
 
 ```sh
@@ -48,27 +132,151 @@ docker compose logs trino
 ```
 
 Wait until the Trino container is `healthy` (`SERVER STARTED` appears in its
-logs). Open the web UI at <http://localhost:8080>.
-If prompted for a username, choose any name; no password is required.
+logs). Open the web UI at <https://localhost:8443>.
+Browsers do not trust the self-signed certificate automatically.
+HTTP is available only inside Docker for discovery and healthchecks.
+User authentication over HTTP is explicitly disabled.
 
-Check the HTTP API and query the built-in `tpch` catalog's sample data:
-
-```sh
-curl --fail http://localhost:8080/v1/info
-docker compose exec -T trino trino --execute 'SELECT count(*) FROM tpch.sf1.nation'
-```
-
-The query should return `25`.
-
-Verify the PostgreSQL connection through the Trino CLI:
+Verify HTTPS while checking both certificate trust and the hostname:
 
 ```sh
-docker compose exec -T trino trino --execute 'SHOW CATALOGS'
-docker compose exec -T trino trino --execute 'SHOW SCHEMAS FROM pg_lab'
+curl --fail --show-error --cacert secrets/trino/localhost.crt \
+  https://localhost:8443/v1/info
 ```
 
-The first command should list `pg_lab`; the second should include the `public`
-schema. These commands do not create tables or data.
+The response should report version `484` and `starting: false`.
+The `/v1/info` endpoint is public and does not test password authentication.
+The web UI now requires the configured username and password.
+
+The CLI accepts the public certificate as a PEM truststore. With a local CLI:
+
+```sh
+trino --server https://localhost:8443 \
+  --truststore-path secrets/trino/localhost.crt --user admin --password
+```
+
+Alternatively, use the CLI included in the container. Copy only the public
+certificate and make it readable (repeat after container recreation):
+
+```sh
+docker cp secrets/trino/localhost.crt trino:/tmp/trino-localhost.crt
+docker exec --user 0 trino chmod 644 /tmp/trino-localhost.crt
+docker compose exec trino trino --server https://localhost:8443 \
+  --truststore-path /tmp/trino-localhost.crt --user admin --password
+```
+
+Repeat for `analyst`. The password prompt is interactive; do not set or print
+`TRINO_PASSWORD` or place passwords in command arguments.
+For each user, run:
+
+```sql
+SELECT current_user;
+SHOW CATALOGS;
+SHOW SCHEMAS FROM pg_lab;
+SHOW TABLES FROM pg_lab.public;
+```
+
+Expect the matching username, catalog `pg_lab`, and schema `public`.
+These checks do not create tables or data. Both users still use the same
+PostgreSQL connector credentials; Trino applies user authorization before access.
+
+Test the SQL endpoint with curl; `--user admin` prompts for the password:
+
+```sh
+curl --cacert secrets/trino/localhost.crt --user admin \
+  -H 'X-Trino-User: admin' --data-binary 'SELECT current_user' \
+  https://localhost:8443/v1/statement
+```
+
+Repeat for `analyst`. Follow any returned `nextUri` using the same TLS validation
+and credentials to retrieve results. A wrong password or omitted credentials
+must return HTTP 401. Do not use verbose curl output when sending credentials.
+Test missing credentials without printing response bodies:
+
+```sh
+curl --cacert secrets/trino/localhost.crt -sS -o /dev/null \
+  -w '%{http_code}\n' -H 'X-Trino-User: admin' \
+  --data-binary 'SELECT 1' https://localhost:8443/v1/statement
+```
+
+Ensure host port 8080 is absent from `docker compose ps`. Verify internal HTTP
+rejects SQL even with a forged username (expect HTTP 401 or 403):
+
+```sh
+docker compose exec -T trino curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H 'X-Trino-User: admin' --data-binary 'SELECT 1' \
+  http://localhost:8080/v1/statement
+```
+
+The image healthcheck still uses public HTTP `/v1/info`, so it needs no user
+password. Internal discovery continues to use `http://localhost:8080`.
+
+In DBeaver, use the Trino driver, `localhost:8443`, `SSL=true`,
+`SSLVerification=FULL`, and `SSLTrustStorePath` pointing to the absolute path of
+`secrets/trino/localhost.crt` (the public PEM certificate).
+Enter each Trino user's password through the login dialog, not the JDBC URL.
+Verify both logins, rejection of a wrong password, and the SQL checks above.
+Do not disable TLS certificate validation for the self-signed certificate.
+PostgreSQL remains separately accessible on localhost:5433 with its own credentials.
+
+## File-based system access control
+
+`trino/access-control.properties` loads `trino/access-control/rules.json`.
+Both paths are mounted read-only. Rules are evaluated first-match within each
+section. Explicit rule lists deny unmatched operations; omitting a section can
+have permissive defaults. Restart Trino after changing rules.
+
+- `admin` has catalog `owner` access to all current and future catalogs, schema
+  ownership, all table privileges, function and procedure privileges, all session
+  properties, query execution/view/cancellation, system information read/write,
+  and ownership reassignment. System write access includes graceful shutdown.
+- `analyst` has read-only catalog access to `pg_lab` and `system`, SELECT on
+  `pg_lab.public` and `system.jdbc`, and management of own queries only.
+  PostgreSQL passthrough functions/procedures and other catalogs are denied.
+- Impersonation is denied for both users. PASSWORD authentication is unchanged.
+- Built-in functions and filtered `information_schema` metadata have special
+  handling. DBeaver DDL previews or session-setting features may be denied to
+  `analyst`; do not broaden permissions without reviewing the exact failure.
+- File-based access control does not support role administration and does not
+  independently restrict table procedures (`ALTER TABLE ... EXECUTE`). Review
+  connector capabilities before adding catalogs. Static catalog management
+  remains enabled, so SQL catalog creation is still unavailable.
+- Backend account permissions and connector capabilities still limit `admin`.
+  Direct PostgreSQL connections bypass Trino authorization. Do not share the
+  technical PostgreSQL credentials with analysts.
+- Configuration, credentials, and infrastructure are administered through files,
+  Docker, and Git, not SQL. Secrets must never be committed.
+
+Validate without exposing environment values:
+
+```sh
+python3 -m json.tool trino/access-control/rules.json > /dev/null
+docker compose config --quiet
+docker compose up -d --no-deps trino
+```
+
+Run the interactive integration checks from the host with Python 3:
+
+```sh
+python3 scripts/verify_access_control.py
+```
+
+The script prompts for both passwords without echoing them, validates TLS against
+`secrets/trino/localhost.crt`, and keeps credentials only in memory. It tests
+catalog visibility, metadata, SELECT, passthrough rejection, and query ownership
+via REST. Query cancellation checks use completed probe queries to verify endpoint
+authorization without cancelling any application workload.
+
+DDL/DML tests create uniquely named `pg_lab.public.acl_probe_<uuid>` tables only.
+They check admin CREATE/INSERT/UPDATE/DELETE/DROP and analyst rejection of those
+operations. Cleanup runs in `finally`; if the process is forcibly killed or the
+server becomes unreachable, remove only the exact reported probe table names as
+admin after reviewing the failure. Never clean up unrelated tables or volumes.
+A failure does not change permissions. Share only the PASS/FAIL report, not
+passwords or secrets. These tests require interactive execution and are not
+considered passed until the report completes successfully.
+
+Reference: [Trino 484 file-based access control](https://trino.io/docs/current/security/file-system-access-control.html).
 
 ## Stop and remove the containers
 

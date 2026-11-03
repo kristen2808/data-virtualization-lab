@@ -3,11 +3,19 @@ services:
     container_name: trino
     image: trinodb/trino:484
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8443:8443"
+    env_file:
+      - ./secrets/trino/internal.env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
+      - ./trino/config.properties:/etc/trino/config.properties:ro
+      - ./trino/password-authenticator.properties:/etc/trino/password-authenticator.properties:ro
+      - ./trino/access-control.properties:/etc/trino/access-control.properties:ro
+      - ./trino/access-control:/etc/trino/access-control:ro
+      - ./secrets/trino/password.db:/etc/trino/auth/password.db:ro
+      - ./secrets/trino/localhost.pem:/etc/trino/tls/localhost.pem:ro
       - ./trino/catalog/pg_lab.properties:/etc/trino/catalog/pg_lab.properties:ro
     depends_on:
       postgres:
