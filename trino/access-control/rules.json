@@ -2,6 +2,7 @@
   "catalogs": [
     {"user": "^admin$", "catalog": ".*", "allow": "owner"},
     {"user": "^analyst$", "catalog": "^pg_lab$", "allow": "read-only"},
+    {"user": "^analyst$", "catalog": "^mssql_lab$", "allow": "read-only"},
     {"user": "^analyst$", "catalog": "^system$", "allow": "read-only"},
     {"catalog": ".*", "allow": "none"}
   ],
@@ -11,6 +12,7 @@
   "tables": [
     {"user": "^admin$", "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE", "OWNERSHIP", "GRANT_SELECT"]},
     {"user": "^analyst$", "catalog": "^pg_lab$", "schema": "^public$", "privileges": ["SELECT"]},
+    {"user": "^analyst$", "catalog": "^mssql_lab$", "schema": "^dbo$", "privileges": ["SELECT"]},
     {"user": "^analyst$", "catalog": "^system$", "schema": "^jdbc$", "privileges": ["SELECT"]}
   ],
   "queries": [

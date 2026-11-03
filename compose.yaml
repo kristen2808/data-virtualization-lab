@@ -9,6 +9,8 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      MSSQL_USER: ${MSSQL_USER:-sa}
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
     volumes:
       - ./trino/config.properties:/etc/trino/config.properties:ro
       - ./trino/password-authenticator.properties:/etc/trino/password-authenticator.properties:ro
@@ -16,7 +18,9 @@ services:
       - ./trino/access-control:/etc/trino/access-control:ro
       - ./secrets/trino/password.db:/etc/trino/auth/password.db:ro
       - ./secrets/trino/localhost.pem:/etc/trino/tls/localhost.pem:ro
+      - ./secrets/trino/localhost.crt:/etc/trino/tls/localhost.crt:ro
       - ./trino/catalog/pg_lab.properties:/etc/trino/catalog/pg_lab.properties:ro
+      - ./trino/catalog/mssql_lab.properties:/etc/trino/catalog/mssql_lab.properties:ro
     depends_on:
       postgres:
         condition: service_healthy

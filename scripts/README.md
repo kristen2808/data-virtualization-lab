@@ -1,9 +1,38 @@
 # Synthetic data for the virtualization PoC
 
-Run these files in DBeaver against the source databases, **not through Trino**.
+Run seed SQL files in DBeaver against the source databases, **not through Trino**.
 No passwords are included. Use the existing local connection credentials.
 Save SQL files as UTF-8 so Czech city and region names are preserved.
-The existing `verify_access_control.py` script is unrelated to this seed dataset.
+The seed scripts below run directly against PostgreSQL and SQL Server.
+`federated_queries.sql` runs through Trino; `verify_access_control.py` tests
+Trino permissions interactively.
+
+## Federated queries
+
+Open `federated_queries.sql` in DBeaver using the **Trino HTTPS connection**
+(`localhost:8443`), not a direct PostgreSQL or SQL Server connection.
+Authenticate as `admin` or `analyst` with TLS certificate validation enabled.
+Both `pg_lab` and `mssql_lab` catalogs must be loaded and the source seed data
+must already exist.
+
+The query joins PostgreSQL `pg_lab.public.customers` with SQL Server
+`mssql_lab.dbo.orders` by `customer_id`, returning the first 20 rows ordered
+by `order_id`. It reads data only and can be repeated safely.
+The federated join has been manually verified successfully in this lab.
+
+## Access control checks
+
+From the project root, run:
+
+```sh
+python3 scripts/verify_access_control.py
+```
+
+The script prompts for both Trino passwords without displaying them. It checks
+catalog visibility, query ownership, and PostgreSQL read/write permissions using
+temporary fixture tables named `acl_probe_<uuid>` that it removes afterward.
+It does not seed the dataset below or test SQL Server DML permissions.
+See the root README for the full test scope and cleanup limitations.
 
 ## Execution order
 
@@ -33,7 +62,9 @@ No new PostgreSQL database or Trino catalog is created.
 
 PostgreSQL files each consist of one atomic `DO` statement: an unhandled error
 rolls back that statement. SQL Server table/seed files use `SET XACT_ABORT ON`,
-explicit transactions, `TRY/CATCH`, rollback, and `THROW`. Target-table seed\noperations use a nested `sp_executesql` scope so binding/compilation errors can\nalso be caught and rolled back. The client must not
+explicit transactions, `TRY/CATCH`, rollback, and `THROW`. Target-table seed
+operations use a nested `sp_executesql` scope so binding/compilation errors can
+also be caught and rolled back. The client must not
 wrap them in an existing transaction. If the client leaves a PostgreSQL session
 in an aborted transaction, issue `ROLLBACK` before retrying.
 
@@ -143,10 +174,10 @@ cross-server ID consistency without linked servers or a new Trino catalog.
 Separate checks are not a single atomic snapshot; run them without concurrent
 fixture modifications.
 
-After a SQL Server catalog is configured in a separate task, a direct Trino
-anti-join can verify actual cross-server relationships. Replace `mssql_lab`
-with that catalog's real name; it does not exist as part of these scripts.
-Run as `admin`: the current `analyst` policy intentionally does not allow it.
+After the `mssql_lab` catalog configuration is applied to Trino, the following
+anti-joins verify actual cross-server relationships. Both `admin` and `analyst`
+can run these SELECTs under the current policy. The seed scripts themselves
+do not configure or reload Trino catalogs.
 
 ```sql
 SELECT count(*) AS missing_customers
@@ -176,8 +207,10 @@ If a file fails, stop and inspect the error; do not disable checks or delete dat
 A failed later file does not undo an already committed earlier file. Fix the
 underlying issue, then rerun. No Compose/Trino changes or volume cleanup are needed.
 
-These scripts have been prepared for review; they have not been executed against
-the databases as part of this task.
+The SQL Server seed script has been executed successfully: 10000 orders,
+30000 order items, and no orphan order items were verified. The federated
+customer/order JOIN has also been manually verified. This does not constitute
+a full rerun or validation of every initialization script.
 
 References: [PostgreSQL 17 error handling](https://www.postgresql.org/docs/17/plpgsql-errors-and-messages.html),
 [SQL Server XACT_ABORT](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-xact-abort-transact-sql?view=sql-server-ver16),

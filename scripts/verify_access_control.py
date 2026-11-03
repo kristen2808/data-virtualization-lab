@@ -79,7 +79,7 @@ def main():
         names = {row[0] for row in rows}
         record(user + ': pg_lab visible', 'pg_lab' in names)
         if user == 'analyst':
-            record('analyst: catalog allowlist', names == {'pg_lab', 'system'})
+            record('analyst: catalog allowlist', names == {'pg_lab', 'mssql_lab', 'system'})
         check(user, 'SHOW SCHEMAS FROM pg_lab')
         check(user, 'SHOW TABLES FROM pg_lab.public')
         check(user, 'SELECT * FROM system.jdbc.catalogs')

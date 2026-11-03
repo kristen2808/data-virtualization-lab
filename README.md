@@ -6,7 +6,7 @@
 - PostgreSQL: `localhost:5433`, database `lab_db`; credentials in `.env`.
 - SQL Server 2022 Developer: `localhost:1433`, login `sa`; password in `.env`.
 - `admin`: full configured administrative access across all catalogs.
-- `analyst`: SELECT on `pg_lab.public`, JDBC metadata, and own query management.
+- `analyst`: SELECT on `pg_lab.public` and `mssql_lab.dbo`, JDBC metadata, and own query management.
 - Start: `docker compose up -d`; stop: `docker compose down` (keeps data).
 - Verify permissions: `python3 scripts/verify_access_control.py` (interactive).
 - Keep `.env` and `secrets/` out of Git. Setup instructions follow below.
@@ -20,7 +20,8 @@ localhost. Internal HTTP port 8080 is not published.
 `trino/config.properties` preserves discovery and catalog defaults and enables
 HTTPS with PASSWORD authentication and file-based system access control.
 `admin` has the broadest configured administrative permissions; `analyst`
-can only SELECT from `pg_lab.public`, read JDBC metadata, and manage own queries.
+can only SELECT from `pg_lab.public` and `mssql_lab.dbo`, read JDBC metadata,
+and manage own queries.
 
 The `postgres` service uses a container named `trino-postgre`, the official
 `postgres:17.11-bookworm` image, the `lab_db` database, and the named
@@ -62,7 +63,7 @@ chmod 700 secrets secrets/trino
   cat secrets/trino/localhost.key secrets/trino/localhost.crt \
     > secrets/trino/localhost.pem
 )
-chmod 644 secrets/trino/localhost.pem
+chmod 644 secrets/trino/localhost.pem secrets/trino/localhost.crt
 ```
 
 Git ignores `secrets/`. The directories have mode `700`, protecting the key
@@ -166,15 +167,17 @@ trino --server https://localhost:8443 \
   --truststore-path secrets/trino/localhost.crt --user admin --password
 ```
 
-Alternatively, use the CLI included in the container. Copy only the public
-certificate and make it readable (repeat after container recreation):
+Alternatively, use the CLI included in the container. The public certificate is
+mounted read-only and remains available after container recreation:
 
 ```sh
-docker cp secrets/trino/localhost.crt trino:/tmp/trino-localhost.crt
-docker exec --user 0 trino chmod 644 /tmp/trino-localhost.crt
 docker compose exec trino trino --server https://localhost:8443 \
-  --truststore-path /tmp/trino-localhost.crt --user admin --password
+  --truststore-path /etc/trino/tls/localhost.crt --user admin --password
 ```
+
+For an existing setup, run `chmod 644 secrets/trino/localhost.crt` once so the
+container's Trino user can read the public certificate. No certificate copy or
+root command inside the container is needed.
 
 Repeat for `analyst`. The password prompt is interactive; do not set or print
 `TRINO_PASSWORD` or place passwords in command arguments.
@@ -241,8 +244,9 @@ have permissive defaults. Restart Trino after changing rules.
   ownership, all table privileges, function and procedure privileges, all session
   properties, query execution/view/cancellation, system information read/write,
   and ownership reassignment. System write access includes graceful shutdown.
-- `analyst` has read-only catalog access to `pg_lab` and `system`, SELECT on
-  `pg_lab.public` and `system.jdbc`, and management of own queries only.
+- `analyst` has read-only catalog access to `pg_lab`, `mssql_lab`, and `system`,
+  SELECT on `pg_lab.public`, `mssql_lab.dbo`, and `system.jdbc`, and management
+  of own queries only.
   PostgreSQL passthrough functions/procedures and other catalogs are denied.
 - Impersonation is denied for both users. PASSWORD authentication is unchanged.
 - Built-in functions and filtered `information_schema` metadata have special
@@ -289,6 +293,60 @@ considered passed until the report completes successfully.
 
 Reference: [Trino 484 file-based access control](https://trino.io/docs/current/security/file-system-access-control.html).
 
+## SQL Server catalog in Trino
+
+`trino/catalog/mssql_lab.properties` defines the `mssql_lab` SQL Server connector
+and is mounted read-only. It connects to `sqlserver:1433`, database `lab_mssql`,
+over the internal Compose network. The source tables must already exist.
+
+Trino receives `MSSQL_USER` (default `sa`) and `MSSQL_SA_PASSWORD` from the local
+Compose environment / ignored `.env`. Add `MSSQL_USER=sa` to `.env` if desired;
+reuse the existing SQL Server password without printing it or changing it.
+`.env.example` documents the variable names only. No credentials are stored in
+the catalog file. Docker administrators can inspect container environment values.
+
+Using `sa` gives the connector broad backend privileges for this local PoC.
+Replace it with a dedicated technical account with minimum database permissions
+in a later task; then separate its password variable from the server's SA password.
+Trino's `admin` policy already covers all catalogs. `analyst` can SELECT only from
+`mssql_lab.dbo` (plus existing PostgreSQL data and JDBC metadata); writes, DDL,
+SQL Server passthrough functions/procedures, and impersonation remain denied.
+
+The JDBC URL uses `encrypt=true;trustServerCertificate=true`: traffic is encrypted,
+but the SQL Server certificate is **not validated**. Use this only for the local
+PoC. For deployment, configure a trusted server certificate, validate its hostname,
+and set `trustServerCertificate=false`. Trino client HTTPS settings are unchanged.
+
+The catalog and environment changes require recreating Trino in a later,
+explicitly approved verification step; they are not hot-loaded by static catalog
+management. No container restart or SQL test is performed merely by editing files.
+Once applied, use DBeaver's existing Trino HTTPS connection or a local CLI:
+
+```sh
+trino --server https://localhost:8443 \
+  --truststore-path secrets/trino/localhost.crt --user analyst --password
+```
+
+Enter the password interactively. Run these read-only checks as both `admin`
+and `analyst`:
+
+```sql
+SHOW CATALOGS;
+SHOW SCHEMAS FROM mssql_lab;
+SHOW TABLES FROM mssql_lab.dbo;
+SELECT count(*) FROM mssql_lab.dbo.orders;
+SELECT count(*) FROM mssql_lab.dbo.order_items;
+SELECT order_id, customer_id, order_date, status
+FROM mssql_lab.dbo.orders
+ORDER BY order_id
+LIMIT 10;
+```
+
+The deterministic fixture has 10000 orders and 30000 order items. These counts
+apply only after the source seed scripts have successfully completed.
+
+Reference: [Trino SQL Server connector](https://trino.io/docs/current/connector/sqlserver.html).
+
 ## SQL Server 2022 on Apple Silicon
 
 The `sqlserver` service uses the official
@@ -297,8 +355,9 @@ The `sqlserver` service uses the official
 The requested `2022-latest` tag is mutable within the 2022 release line.
 Data persists in the `sqlserver_data` volume mounted at `/var/opt/mssql`.
 The host endpoint is `127.0.0.1:1433`; other Compose containers use
-`sqlserver:1433` on the existing default network. No Trino catalog or user
-application databases/tables are created by this configuration.
+`sqlserver:1433` on the existing default network. The Trino catalog is configured
+separately as described above; the service
+configuration does not create application databases or tables.
 
 Add `MSSQL_SA_PASSWORD` to your existing local `.env`; do not replace that file
 or overwrite existing PostgreSQL credentials. For a fresh checkout, use
