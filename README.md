@@ -1,5 +1,16 @@
 # Local Trino PoC
 
+## Quick reference
+
+- Trino: `https://localhost:8443` with PASSWORD authentication.
+- PostgreSQL: `localhost:5433`, database `lab_db`; credentials in `.env`.
+- SQL Server 2022 Developer: `localhost:1433`, login `sa`; password in `.env`.
+- `admin`: full configured administrative access across all catalogs.
+- `analyst`: SELECT on `pg_lab.public`, JDBC metadata, and own query management.
+- Start: `docker compose up -d`; stop: `docker compose down` (keeps data).
+- Verify permissions: `python3 scripts/verify_access_control.py` (interactive).
+- Keep `.env` and `secrets/` out of Git. Setup instructions follow below.
+
 Requirements: a running Docker Engine and Docker Compose v2.
 
 The `trino` service uses the official `trinodb/trino:484` image and a container
@@ -277,6 +288,63 @@ passwords or secrets. These tests require interactive execution and are not
 considered passed until the report completes successfully.
 
 Reference: [Trino 484 file-based access control](https://trino.io/docs/current/security/file-system-access-control.html).
+
+## SQL Server 2022 on Apple Silicon
+
+The `sqlserver` service uses the official
+`mcr.microsoft.com/mssql/server:2022-latest` image with `platform: linux/amd64`,
+`ACCEPT_EULA=Y`, and `MSSQL_PID=Developer` (development/testing only).
+The requested `2022-latest` tag is mutable within the 2022 release line.
+Data persists in the `sqlserver_data` volume mounted at `/var/opt/mssql`.
+The host endpoint is `127.0.0.1:1433`; other Compose containers use
+`sqlserver:1433` on the existing default network. No Trino catalog or user
+application databases/tables are created by this configuration.
+
+Add `MSSQL_SA_PASSWORD` to your existing local `.env`; do not replace that file
+or overwrite existing PostgreSQL credentials. For a fresh checkout, use
+`.env.example` as described above. Set a unique password from a password manager,
+preferably at least 16 characters and including uppercase, lowercase, digits,
+and symbols. Use single quotes around the value to preserve `$` and `#` literally.
+The example deliberately leaves the value empty, and Compose rejects an empty
+or missing value. Keep `.env` private (`chmod 600 .env`) and never commit it.
+Git already ignores `.env`, `.env.*` (except `.env.example`), and `secrets/`.
+Docker administrators can read container environment variables; do not print
+expanded Compose configuration or container environment.
+
+Start only SQL Server, leaving the other services running unchanged:
+
+```sh
+docker compose config --quiet
+docker compose up -d --no-deps sqlserver
+docker compose ps sqlserver
+docker compose logs --tail 100 sqlserver
+```
+
+Wait for `SQL Server is now ready for client connections` in the logs.
+A running container alone does not mean SQL Server is ready. Verify a SQL
+connection using the image's sqlcmd utility; omitting `-P` prompts for the password:
+
+```sh
+docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -C -Q 'SELECT @@VERSION;'
+```
+
+`-C` trusts SQL Server's local server certificate for this PoC; it does not change
+Trino's TLS configuration. This check reads server metadata only. To stop just
+this service, use `docker compose stop sqlserver`. Do not use `down -v` if you
+want to preserve database data. Changing the environment password is not a
+password rotation procedure for an already initialized persistent instance.
+
+SQL Server's Linux image targets x86-64, not ARM64. On an M1 Pro, Docker must
+emulate AMD64; `platform` selects the architecture but does not guarantee that
+SQL Server will start. Microsoft does not test or support Rosetta/QEMU execution.
+Expect slower startup, higher resource usage, or crashes. Ensure Docker Desktop
+has AMD64 emulation available and sufficient memory (SQL Server alone requires
+at least 2 GB). If emulation fails, use an x86-64 Linux host for SQL Server;
+keep the existing Trino/PostgreSQL services unchanged.
+
+References: [Microsoft container deployment and platform support](https://learn.microsoft.com/en-us/sql/linux/containers/deploy?view=sql-server-ver16)
+and [SQL Server container quickstart](https://learn.microsoft.com/en-us/sql/linux/quickstart-install-connect-docker).
 
 ## Stop and remove the containers
 
