@@ -11,11 +11,12 @@ PostgreSQL `lab_db.api_data.users`, merging records by `id` to avoid duplicates.
 Credentials are passed through environment variables. The build context excludes
 local secrets via `dlt/Dockerfile.dockerignore`.
 
-From the project root:
+The service is defined in `compose.dlt.yaml`, which extends the core services
+in `compose.yaml`. From the project root:
 
 ```sh
-docker compose build dlt
-docker compose run --rm dlt
+docker compose -f compose.yaml -f compose.dlt.yaml build dlt
+docker compose -f compose.yaml -f compose.dlt.yaml run --rm dlt
 ```
 
 The container runs once and is removed when it exits. Loaded PostgreSQL data

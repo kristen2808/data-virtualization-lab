@@ -407,6 +407,11 @@ and [SQL Server container quickstart](https://learn.microsoft.com/en-us/sql/linu
 
 ## One-off REST API ingestion with dlt
 
+Core services (Trino, PostgreSQL, and SQL Server) are defined in `compose.yaml`.
+The optional one-off `dlt` service is defined in `compose.dlt.yaml`; always pass
+both files, with `compose.yaml` first, when building or running the pipeline.
+All services share the existing project network and persistent database volumes.
+
 The `dlt` service loads `https://jsonplaceholder.typicode.com/users` into
 `lab_db.api_data.users` using Python 3.12 and `dlt[postgres]==1.32.0`.
 `pipelines/api_users.py` uses dlt's declarative REST API source and a single-page
@@ -422,11 +427,13 @@ The database user must be allowed to create schemas/tables and merge rows.
 From the project root:
 
 ```sh
-docker compose build dlt
-docker compose run --rm dlt
+docker compose -f compose.yaml -f compose.dlt.yaml build dlt
+docker compose -f compose.yaml -f compose.dlt.yaml run --rm dlt
 ```
 
-The `pipelines` profile prevents this one-off job from running during ordinary
+The overlay preserves the `pipelines` profile, which prevents the one-off job
+from running even when both files are supplied to a general `up` command.
+The default Compose file contains only the core services for ordinary
 `docker compose up -d`. Explicitly targeting `dlt` with `run` enables the service;
 its dependency starts PostgreSQL if needed and waits for the existing healthcheck.
 The container exits after loading and is removed by `--rm`. Existing Trino,
