@@ -1,0 +1,8 @@
+# Only send pipeline code and its build definition, never local secrets.
+**
+!docker/
+!docker/dlt/
+!docker/dlt/Dockerfile
+!docker/dlt/Dockerfile.dockerignore
+!pipelines/
+!pipelines/api_users.py

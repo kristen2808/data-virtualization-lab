@@ -11,14 +11,18 @@ Trino permissions interactively.
 
 Open `federated_queries.sql` in DBeaver using the **Trino HTTPS connection**
 (`localhost:8443`), not a direct PostgreSQL or SQL Server connection.
-Authenticate as `admin` or `analyst` with TLS certificate validation enabled.
+Authenticate with TLS certificate validation enabled. Queries 1–2 work for
+`admin` and `analyst`; queries 3–4 require `admin` under the current access policy.
 Both `pg_lab` and `mssql_lab` catalogs must be loaded and the source seed data
 must already exist.
 
-The query joins PostgreSQL `pg_lab.public.customers` with SQL Server
-`mssql_lab.dbo.orders` by `customer_id`, returning the first 20 rows ordered
-by `order_id`. It reads data only and can be repeated safely.
-The federated join has been manually verified successfully in this lab.
+The file contains four read-only examples: customer orders across both databases,
+order counts by region, and INNER/LEFT JOINs between dlt-loaded API users and
+SQL Server orders. Run statements individually; they can be repeated safely.
+Queries 3–4 require the dlt pipeline to have populated `pg_lab.api_data.users`.
+Matching API user `id` to `customer_id` is a demo assumption, not a verified
+real-world identity relationship. The original customer/order join was manually
+verified in this lab; the additional queries have not been tested here.
 
 ## Access control checks
 

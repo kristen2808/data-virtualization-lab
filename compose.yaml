@@ -56,6 +56,22 @@ services:
     volumes:
       - sqlserver_data:/var/opt/mssql
 
+  dlt:
+    build:
+      context: .
+      dockerfile: docker/dlt/Dockerfile
+    profiles: ["pipelines"]
+    restart: "no"
+    environment:
+      DESTINATION__POSTGRES__CREDENTIALS__HOST: postgres
+      DESTINATION__POSTGRES__CREDENTIALS__PORT: "5432"
+      DESTINATION__POSTGRES__CREDENTIALS__DATABASE: lab_db
+      DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   sqlserver_data:
