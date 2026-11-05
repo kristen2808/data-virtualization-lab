@@ -469,6 +469,182 @@ No Trino configuration changes are needed.
 References: [dlt REST API source](https://dlthub.com/docs/dlt-ecosystem/verified-sources/rest_api/basic)
 and [PostgreSQL destination](https://dlthub.com/docs/dlt-ecosystem/destinations/postgres).
 
+## Superset metadata database
+
+`scripts/postgres/03_superset_metadata.sql` prepares a separate database
+`superset_metadata` owned by login role `superset`. The role has no SUPERUSER,
+CREATEDB, CREATEROLE, REPLICATION, or BYPASSRLS privileges. It does not use the
+analytical `lab_db` database for Superset metadata. No Superset service, migrations,
+or administrator account are installed by this step.
+
+This is a **psql script**, using `\if`, `\gexec`, and password handling; do not
+execute it as ordinary SQL in DBeaver. PostgreSQL's volume is already initialized,
+so `/docker-entrypoint-initdb.d/` is not used. Run manually against maintenance
+database `postgres` as `lab_user`, outside any transaction (`psql -1` is invalid):
+
+```sh
+docker cp scripts/postgres/03_superset_metadata.sql trino-postgre:/tmp/03_superset_metadata.sql
+docker compose exec postgres sh -c \
+  'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -f /tmp/03_superset_metadata.sql'
+```
+
+For a new role, psql prompts twice for its password without echoing it and sends
+an encrypted SCRAM verifier to PostgreSQL. Store that password in a password
+manager. For an existing role, there is no prompt and the password is preserved.
+The script refuses incompatible existing role privileges, role memberships,
+or database ownership/settings rather than silently changing them.
+
+For automated initialization, the optional `SUPERSET_DB_PASSWORD` environment
+variable accepts either the new password or a PostgreSQL SCRAM verifier. Pass
+only the environment variable's name through Docker, not its value on the command
+line. Do not enable SQL tracing or verbose logging; plaintext environment values
+are visible to administrators, and a plaintext SQL password assignment may be
+recorded by server auditing. Prefer the interactive `\password` method or an
+already generated SCRAM verifier. Never commit a password or verifier.
+
+Initialization in this lab has been tested successfully. A generated password
+is stored only in ignored `secrets/superset/metadata.env` (file mode `600`, parent
+directories `700`). Preserve it for the later Superset integration; do not replace
+it during a rerun. It is not added to Compose or baked into any image.
+If this local credentials file is present, a non-interactive rerun is:
+
+```sh
+(
+  set -a
+  . ./secrets/superset/metadata.env
+  set +a
+  docker compose exec -T -e SUPERSET_DB_PASSWORD postgres sh -c \
+    'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -f -' \
+    < scripts/postgres/03_superset_metadata.sql
+)
+```
+
+The existing role's password is ignored on reruns, even if an environment value
+is supplied. Password rotation is a separate explicit operation; use an admin
+psql session and `\password superset` when intentionally rotating it, then update
+the local secret used by Superset.
+
+Verify as `lab_user` using DBeaver or psql:
+
+```sql
+SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+       rolreplication, rolbypassrls
+FROM pg_roles WHERE rolname = 'superset';
+
+SELECT datname, pg_get_userbyid(datdba) AS owner
+FROM pg_database WHERE datname = 'superset_metadata';
+```
+
+Expect LOGIN true, all listed administrative attributes false, and database
+owner `superset`. Test password authentication separately (enter the saved
+password when prompted):
+
+```sh
+docker compose exec postgres psql -X -h 127.0.0.1 -U superset \
+  -d superset_metadata -W -c 'SELECT current_database(), current_user;'
+```
+
+Role creation and password setup are transactional. `CREATE DATABASE` must run
+in auto-commit mode, so initialization cannot be one atomic transaction; if it
+fails after role creation, fix the cause and rerun. Session advisory locking
+serializes this script. Existing databases and their contents are never dropped,
+reinitialized, or migrated. This does not change cluster-wide PUBLIC privileges;
+the role is not a full isolation boundary from every other database.
+
+## Superset web application
+
+`compose.superset.yaml` adds `superset` and the one-off `superset-init` service.
+Both use our custom image based on **`apache/superset:6.0.0`**, with
+`psycopg2-binary==2.9.11`, `trino[sqlalchemy]==0.340.0`, and SQLAlchemy 1.4.54.
+The application connects as database role `superset` to
+`postgres:5432/superset_metadata`. `SUPERSET_DB_PASSWORD` is read from the
+existing `secrets/superset/metadata.env`. It never uses SQLite or `lab_db`
+for its metadata.
+
+Initialize the metadata database as described above before starting the app.
+Create application secrets without overwriting any existing values:
+
+```sh
+python3 scripts/setup_superset_secrets.py
+```
+
+The helper creates these ignored files with mode `600` under private directories:
+
+| File | Purpose |
+|---|---|
+| `secrets/superset/metadata.env` | Existing PostgreSQL `SUPERSET_DB_PASSWORD`; unchanged |
+| `secrets/superset/application.env` | Persistent random `SUPERSET_SECRET_KEY`, shared by init and web |
+| `secrets/superset/admin.env` | Initial web admin username, password, name, and email; init only |
+
+The default web username is `admin`. Retrieve its generated password privately
+from `admin.env` in a local editor; do not paste it into chat or commit it.
+You may edit initial account details before the first initialization. Existing
+users are never overwritten, promoted, or assigned a new password on reruns.
+An existing inactive/non-Admin account with the same name causes an error.
+These credentials are separate from PostgreSQL and Trino accounts.
+
+From the project root:
+
+```sh
+docker compose -f compose.yaml -f compose.superset.yaml config --quiet
+docker compose -f compose.yaml -f compose.superset.yaml build superset
+docker compose -f compose.yaml -f compose.superset.yaml up -d superset
+docker compose -f compose.yaml -f compose.superset.yaml ps -a superset superset-init
+curl --fail http://localhost:8088/health
+```
+
+`superset-init` waits for PostgreSQL, runs `superset db upgrade` and `superset init`,
+then creates a missing administrator through Superset's security manager.
+The web service starts only after init exits successfully. Init may run again
+when starting the application; reruns preserve the administrator password.
+To rerun initialization explicitly:
+
+```sh
+docker compose -f compose.yaml -f compose.superset.yaml run --rm superset-init
+```
+
+Open <http://localhost:8088> and log in with the credentials in `admin.env`.
+The service binds only to `127.0.0.1:8088`. It uses one Gunicorn process with
+threads and local in-memory caches. Queries run synchronously: no Celery worker,
+Redis, scheduled reports, or global async queries are configured. Leave
+**Asynchronous query execution** disabled when adding analytical databases.
+Drivers are installed, but analytical database connections are not created
+automatically. Trino still requires its existing HTTPS/password credentials and
+appropriate TLS trust configuration in a later connection setup step.
+
+Verify metadata in a direct PostgreSQL connection to `superset_metadata`:
+
+```sql
+SELECT current_database(), current_user;
+SELECT version_num FROM public.alembic_version;
+SELECT username, active FROM public.ab_user;
+SELECT count(*) AS metadata_tables
+FROM information_schema.tables
+WHERE table_schema='public' AND table_type='BASE TABLE';
+```
+
+Expect database `superset_metadata`, an Alembic revision, and the admin user.
+Dashboards, users, and saved connections persist in the existing PostgreSQL
+volume. Keep `application.env` backed up alongside database backups: changing
+`SUPERSET_SECRET_KEY` arbitrarily breaks encrypted credentials and sessions.
+No new volume is introduced. Superset migrations modify only its dedicated
+metadata database. For future version upgrades, back it up before migration.
+
+Stop only Superset services without removing PostgreSQL data:
+
+```sh
+docker compose -f compose.yaml -f compose.superset.yaml stop superset superset-init
+```
+
+This is a local HTTP PoC, not a hardened deployment. CSRF remains enabled;
+TLS/security response-header enforcement is disabled for the local HTTP endpoint.
+Do not expose port 8088 externally without configuring deployment security.
+Never print the expanded Compose configuration, container environment, passwords,
+or secret key.
+
+References: [Superset Docker images](https://superset.apache.org/admin-docs/installation/docker-builds/)
+and [Superset configuration](https://superset.apache.org/admin-docs/configuration/configuring-superset/).
+
 ## Stop and remove the containers
 
 ```sh

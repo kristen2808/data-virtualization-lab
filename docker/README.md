@@ -21,3 +21,19 @@ docker compose -f compose.yaml -f compose.dlt.yaml run --rm dlt
 
 The container runs once and is removed when it exits. Loaded PostgreSQL data
 remains available.
+
+## Superset
+
+`superset/Dockerfile` extends Apache Superset 6.0.0 with PostgreSQL and Trino
+SQLAlchemy drivers. It includes `superset_config.py` and an idempotent
+`init_superset.py`; passwords and the secret key are supplied only at runtime.
+Metadata persists in PostgreSQL `superset_metadata`. No Redis or Celery is used.
+
+```sh
+python3 scripts/setup_superset_secrets.py
+docker compose -f compose.yaml -f compose.superset.yaml build superset
+docker compose -f compose.yaml -f compose.superset.yaml up -d superset
+```
+
+Open <http://localhost:8088>. See the root README for metadata initialization,
+local credentials, and safe reruns.

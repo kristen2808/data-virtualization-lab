@@ -1,0 +1,36 @@
+x-superset-common: &superset-common
+  image: data-virtualization-lab-superset:6.0.0
+  build:
+    context: ./docker/superset
+  env_file:
+    - ./secrets/superset/metadata.env
+    - ./secrets/superset/application.env
+
+services:
+  superset-init:
+    <<: *superset-common
+    env_file:
+      - ./secrets/superset/metadata.env
+      - ./secrets/superset/application.env
+      - ./secrets/superset/admin.env
+    command: ["python", "/app/local/init_superset.py"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  superset:
+    <<: *superset-common
+    ports:
+      - "127.0.0.1:8088:8088"
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8088/health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      start_period: 30s
+      retries: 6

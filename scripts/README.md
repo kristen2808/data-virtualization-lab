@@ -38,6 +38,18 @@ temporary fixture tables named `acl_probe_<uuid>` that it removes afterward.
 It does not seed the dataset below or test SQL Server DML permissions.
 See the root README for the full test scope and cleanup limitations.
 
+## Superset metadata initialization
+
+`postgres/03_superset_metadata.sql` is separate from the analytical seed scripts.
+Run it with **psql**, connected as `lab_user` to database `postgres`, not as a
+DBeaver SQL batch. It creates `superset_metadata` and its restricted login owner
+`superset`; existing objects and passwords are preserved on reruns. No tables or
+Superset migrations are created. The script uses an interactive hidden password
+prompt, or optional `SUPERSET_DB_PASSWORD` from the environment.
+
+See [the root README](../README.md#superset-metadata-database) for commands,
+local secret storage, verification queries, and transaction limitations.
+
 ## Execution order
 
 Use a dedicated SQL editor with **auto-commit enabled**, no open transaction,
