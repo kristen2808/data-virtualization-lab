@@ -53,13 +53,19 @@ mkdir -p secrets/trino
 chmod 700 secrets secrets/trino
 (
   umask 077
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
-    -out secrets/trino/localhost.key
+  if [ ! -f secrets/trino/localhost.key ]; then
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+      -out secrets/trino/localhost.key
+  fi
   openssl req -new -x509 -sha256 -days 365 \
     -key secrets/trino/localhost.key -out secrets/trino/localhost.crt \
-    -subj '/CN=localhost' \
-    -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
-    -addext 'extendedKeyUsage=serverAuth'
+    -subj '/CN=trino' \
+    -addext 'subjectAltName=DNS:trino,DNS:localhost,IP:127.0.0.1' \
+    -addext 'basicConstraints=critical,CA:FALSE' \
+    -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
+    -addext 'extendedKeyUsage=serverAuth' \
+    -addext 'subjectKeyIdentifier=hash' \
+    -addext 'authorityKeyIdentifier=keyid:always'
   cat secrets/trino/localhost.key secrets/trino/localhost.crt \
     > secrets/trino/localhost.pem
 )
@@ -609,8 +615,76 @@ threads and local in-memory caches. Queries run synchronously: no Celery worker,
 Redis, scheduled reports, or global async queries are configured. Leave
 **Asynchronous query execution** disabled when adding analytical databases.
 Drivers are installed, but analytical database connections are not created
-automatically. Trino still requires its existing HTTPS/password credentials and
-appropriate TLS trust configuration in a later connection setup step.
+automatically. Trino requires its existing HTTPS/password credentials and
+the explicit TLS trust configuration described below.
+
+### Verified TLS from Superset to Trino
+
+Inside Docker, Superset connects to `https://trino:8443`. Trino's self-signed
+certificate must include `DNS:trino`, `DNS:localhost`, and `IP:127.0.0.1` in its SAN.
+The generation command above preserves an existing private key and includes
+critical basic constraints/key usage, server authentication EKU, and subject/authority
+key identifiers for strict Python TLS validation. The certificate is a TLS server
+certificate (`CA:FALSE`), explicitly trusted by this local client.
+
+`compose.superset.yaml` mounts only the public certificate into the web service:
+
+```yaml
+- ./secrets/trino/localhost.crt:/app/certs/trino.crt:ro
+```
+
+The private key and combined PEM stay in Trino's ignored secrets directory;
+neither is mounted in Superset. `superset-init` only uses PostgreSQL metadata
+and does not need this certificate.
+
+For the Trino database connection in Superset, use host `trino`, port `8443`,
+your existing Trino username/password, and the desired catalog/schema. In the
+connection's **Advanced / Other / Engine Parameters**, set:
+
+```json
+{
+  "connect_args": {
+    "http_scheme": "https",
+    "verify": "/app/certs/trino.crt"
+  }
+}
+```
+
+Merge this with any existing engine parameters. Keep certificate and hostname
+verification enabled. A self-signed certificate is not automatically trusted
+merely because it is mounted. This per-connection setting avoids changing trust
+for unrelated HTTP clients. The TLS fix does not update stored database
+connections or credentials automatically; apply this setting in the UI if missing.
+
+After intentional certificate renewal, update both `localhost.crt` and
+`localhost.pem` while preserving the key. Write existing files in place so
+individual bind mounts see their new content; after atomic replacement, recreate
+the affected containers to refresh those mounts. Restart only the affected services:
+
+```sh
+docker compose restart trino
+docker compose -f compose.yaml -f compose.superset.yaml up -d --no-deps superset
+```
+
+No image rebuild, metadata initialization, database restart, or volume deletion is
+needed. A new certificate must also replace the old trusted public certificate
+in clients that imported it (for example, DBeaver or a Java truststore).
+
+Verify from the Superset container without passwords or SQL execution:
+
+```sh
+docker compose -f compose.yaml -f compose.superset.yaml exec -T superset python -c \
+  'import requests; r = requests.get("https://trino:8443/v1/info", verify="/app/certs/trino.crt", timeout=10); r.raise_for_status(); print(r.status_code)'
+```
+
+Verify the host endpoint on macOS:
+
+```sh
+curl --fail --cacert secrets/trino/localhost.crt https://localhost:8443/v1/info
+```
+
+Both checks should succeed. The `/v1/info` endpoint is public; these checks verify
+TLS connectivity and trust, not SQL authorization.
 
 Verify metadata in a direct PostgreSQL connection to `superset_metadata`:
 
