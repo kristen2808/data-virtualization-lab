@@ -24,6 +24,16 @@ Matching API user `id` to `customer_id` is a demo assumption, not a verified
 real-world identity relationship. The original customer/order join was manually
 verified in this lab; the additional queries have not been tested here.
 
+## Live OpenAPI queries
+
+`openapi_queries.sql` runs through the Trino HTTPS connection as either `admin`
+or `analyst`. It reads live JSONPlaceholder users/posts and joins them within
+the `"open-api"` catalog. Double-quote the catalog name because it contains a
+hyphen. No seed scripts or dlt ingestion are needed, and no API rows are stored
+in the source databases. Both users are denied writes and DDL for this catalog.
+The public API must be reachable from Trino; it normally returns 10 users and
+100 posts. The interactive ACL checks also cover this catalog's read-only rules.
+
 ## Access control checks
 
 From the project root, run:

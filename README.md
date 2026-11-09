@@ -13,7 +13,7 @@
 
 Requirements: a running Docker Engine and Docker Compose v2.
 
-The `trino` service uses the official `trinodb/trino:484` image and a container
+The `trino` service uses a custom image based on official `trinodb/trino:484` and a container
 named `trino`. The default image configuration runs both the coordinator
 and worker in a single container. HTTPS port 8443 is available only on
 localhost. Internal HTTP port 8080 is not published.
@@ -254,6 +254,8 @@ have permissive defaults. Restart Trino after changing rules.
   SELECT on `pg_lab.public`, `mssql_lab.dbo`, and `system.jdbc`, and management
   of own queries only.
   PostgreSQL passthrough functions/procedures and other catalogs are denied.
+  Both users additionally have read-only access to the `open-api` catalog; its
+  specific rules precede the general administrator grants.
 - Impersonation is denied for both users. PASSWORD authentication is unchanged.
 - Built-in functions and filtered `information_schema` metadata have special
   handling. DBeaver DDL previews or session-setting features may be denied to
@@ -298,6 +300,71 @@ passwords or secrets. These tests require interactive execution and are not
 considered passed until the report completes successfully.
 
 Reference: [Trino 484 file-based access control](https://trino.io/docs/current/security/file-system-access-control.html).
+
+## Live OpenAPI catalog (no ingestion)
+
+The quoted catalog `"open-api"` queries JSONPlaceholder directly, without dlt,
+PostgreSQL tables, or persistent API response storage. It exposes `default.users`
+and `default.posts` from the public `/users` and `/posts` endpoints.
+
+OpenAPI is a third-party connector, not included in the official Trino image.
+`docker/trino/Dockerfile` extends `trinodb/trino:484` with **trino-openapi v2.2**,
+whose release explicitly targets Trino 484. The build verifies the release ZIP's
+pinned SHA-256 before extraction. It downloads the plugin at build time, so that
+step requires access to GitHub. Do not substitute a plugin built for another
+Trino release without testing compatibility.
+
+`trino/catalog/open-api.properties` points at the read-only mounted local spec
+`trino/openapi/jsonplaceholder.yaml` and `https://jsonplaceholder.typicode.com`.
+Only GET operations are declared; no API credentials are required. The connector's
+HTTP disk cache is disabled by leaving `http-cache.directory` unset. Requests are
+limited to two per second per Trino node. No new Docker volume is introduced.
+
+```sh
+docker compose build trino
+docker compose up -d --no-deps trino
+```
+
+This recreates only Trino; the existing HTTPS certificates, PASSWORD authentication,
+and other catalogs are reused. With Superset running from its separate Compose
+file, Compose may report those containers as orphans: do not remove them as part
+of this operation.
+
+Both `admin` and `analyst` can read API data. The catalog's read-only rule must
+remain before the wildcard administrator rule. Matching table rules allow SELECT
+only on `users` and `posts`; functions and procedures for this catalog are denied.
+INSERT, UPDATE, DELETE, CREATE TABLE, and DROP TABLE are denied even to `admin`.
+Existing privileges in other catalogs and query ownership rules are unchanged.
+
+Connect using the normal authenticated Trino CLI or DBeaver session:
+
+```sh
+docker compose exec trino trino --server https://localhost:8443 \
+  --truststore-path /etc/trino/tls/localhost.crt --user analyst --password
+```
+
+```sql
+SHOW TABLES FROM "open-api".default;
+SELECT count(*) FROM "open-api".default.users; -- normally 10
+SELECT count(*) FROM "open-api".default.posts; -- normally 100
+SELECT id, user_id, title FROM "open-api".default.posts ORDER BY id LIMIT 10;
+```
+
+The hyphen requires double quotes around `"open-api"` in SQL. More read-only
+examples are in `scripts/openapi_queries.sql`. The interactive
+`scripts/verify_access_control.py` also checks API SELECT access and denied writes
+for both accounts.
+
+Unlike `pg_lab.api_data.users`, these rows are fetched from the API at query time.
+Availability, latency, and limits depend on the public service; LIMIT does not
+necessarily reduce the number of downloaded records. Trino may use memory and
+transient execution/spill space; this is not persistent ingestion. A downstream
+client such as Superset can independently cache/export results. The API's user IDs
+are not verified identities of the synthetic customers in the source databases.
+
+References: [plugin v2.2 release (Trino 484)](https://github.com/nineinchnick/trino-openapi/releases/tag/v2.2),
+[versioned plugin documentation](https://github.com/nineinchnick/trino-openapi/blob/v2.2/README.md),
+and [JSONPlaceholder](https://jsonplaceholder.typicode.com/).
 
 ## SQL Server catalog in Trino
 

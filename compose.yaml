@@ -1,7 +1,9 @@
 services:
   trino:
     container_name: trino
-    image: trinodb/trino:484
+    image: data-virtualization-lab-trino:484-openapi-2.2
+    build:
+      context: ./docker/trino
     ports:
       - "127.0.0.1:8443:8443"
     env_file:
@@ -21,6 +23,8 @@ services:
       - ./secrets/trino/localhost.crt:/etc/trino/tls/localhost.crt:ro
       - ./trino/catalog/pg_lab.properties:/etc/trino/catalog/pg_lab.properties:ro
       - ./trino/catalog/mssql_lab.properties:/etc/trino/catalog/mssql_lab.properties:ro
+      - ./trino/catalog/open-api.properties:/etc/trino/catalog/open-api.properties:ro
+      - ./trino/openapi:/etc/trino/openapi:ro
     depends_on:
       postgres:
         condition: service_healthy

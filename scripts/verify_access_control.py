@@ -79,7 +79,7 @@ def main():
         names = {row[0] for row in rows}
         record(user + ': pg_lab visible', 'pg_lab' in names)
         if user == 'analyst':
-            record('analyst: catalog allowlist', names == {'pg_lab', 'mssql_lab', 'system'})
+            record('analyst: catalog allowlist', names == {'pg_lab', 'mssql_lab', 'open-api', 'system'})
         check(user, 'SHOW SCHEMAS FROM pg_lab')
         check(user, 'SHOW TABLES FROM pg_lab.public')
         check(user, 'SELECT * FROM system.jdbc.catalogs')
@@ -88,6 +88,18 @@ def main():
     check('analyst', 'SELECT * FROM tpch.sf1.nation', denied=True)
     check('analyst', "SELECT * FROM TABLE(pg_lab.system.query(query => 'SELECT 1'))", denied=True)
     check('analyst', "CALL pg_lab.system.execute(query => 'SELECT 1')", denied=True)
+    for user in TOKENS:
+        check(user, 'SHOW TABLES FROM "open-api".default')
+        rows, _, ok = check(user, 'SELECT count(*) FROM "open-api".default.users')
+        record(user + ': OpenAPI users count', ok and rows == [[10]])
+        for statement in (
+            'INSERT INTO "open-api".default.posts (id) VALUES (999)',
+            'UPDATE "open-api".default.posts SET title = \'test\' WHERE id = 999',
+            'DELETE FROM "open-api".default.posts WHERE id = 999',
+            'CREATE TABLE "open-api".default.acl_probe_forbidden (id bigint)',
+            'DROP TABLE "open-api".default.posts',
+        ):
+            check(user, statement, denied=True)
     # Exercise query-owner checks independently of SQL procedure permissions.
     _, query_id, _ = check('admin', 'SELECT 1')
     status, _ = request('admin', '/v1/query/' + query_id)

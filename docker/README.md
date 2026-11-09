@@ -37,3 +37,23 @@ docker compose -f compose.yaml -f compose.superset.yaml up -d superset
 
 Open <http://localhost:8088>. See the root README for metadata initialization,
 local credentials, and safe reruns.
+
+## Trino with OpenAPI
+
+`trino/Dockerfile` extends official Trino 484 with the community OpenAPI plugin
+v2.2, built for that exact Trino release. It verifies a pinned SHA-256 checksum.
+The plugin JARs are copied into `/usr/lib/trino/plugin/openapi/` at build time,
+so they survive container recreation. The read-only mounted
+`trino/catalog/open-api.properties` selects it with `connector.name=openapi`;
+`trino/openapi/jsonplaceholder.yaml` defines the available endpoints and columns.
+The `open-api` catalog reads JSONPlaceholder directly using a local GET-only
+OpenAPI specification; HTTP response caching is disabled. Both Trino users have
+SELECT-only access to this catalog. Existing authentication and TLS are reused.
+
+```sh
+docker compose build trino
+docker compose up -d --no-deps trino
+```
+
+Use `scripts/openapi_queries.sql` in an authenticated Trino session. See the root
+README for external plugin compatibility and public API limitations.
