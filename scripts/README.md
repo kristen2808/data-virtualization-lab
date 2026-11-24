@@ -1,4 +1,6 @@
-# Synthetic data for the virtualization PoC
+# SQL scripts and checks
+
+[Project overview](../README.md) · [Trino](../trino/README.md) · [dlt pipeline](../pipelines/README.md)
 
 Run seed SQL files in DBeaver against the source databases, **not through Trino**.
 No passwords are included. Use the existing local connection credentials.
@@ -21,8 +23,7 @@ order counts by region, and INNER/LEFT JOINs between dlt-loaded API users and
 SQL Server orders. Run statements individually; they can be repeated safely.
 Queries 3–4 require the dlt pipeline to have populated `pg_lab.api_data.users`.
 Matching API user `id` to `customer_id` is a demo assumption, not a verified
-real-world identity relationship. The original customer/order join was manually
-verified in this lab; the additional queries have not been tested here.
+real-world identity relationship. The joins demonstrate federation across sources.
 
 ## Live OpenAPI queries
 
@@ -44,21 +45,102 @@ python3 scripts/verify_access_control.py
 
 The script prompts for both Trino passwords without displaying them. It checks
 catalog visibility, query ownership, and PostgreSQL read/write permissions using
-temporary fixture tables named `acl_probe_<uuid>` that it removes afterward.
+new fixture tables named `acl_probe_<uuid>` that it removes afterward.
 It does not seed the dataset below or test SQL Server DML permissions.
-See the root README for the full test scope and cleanup limitations.
+These are ordinary tables, not SQL TEMP tables. The script cleans them up in
+`finally`. If the process is killed or the server is unreachable, cleanup can
+fail. Remove only the exact reported probe names after reviewing the error.
+Query cancellation tests use completed queries. They check REST authorization,
+not interruption of a running workload. OpenAPI checks also test denied writes.
+A failing check does not change permissions.
+See [access rules](../trino/README.md#access-rules) for details.
 
-## Superset metadata initialization
+## Superset metadata database
 
-`postgres/03_superset_metadata.sql` is separate from the analytical seed scripts.
-Run it with **psql**, connected as `lab_user` to database `postgres`, not as a
-DBeaver SQL batch. It creates `superset_metadata` and its restricted login owner
-`superset`; existing objects and passwords are preserved on reruns. No tables or
-Superset migrations are created. The script uses an interactive hidden password
-prompt, or optional `SUPERSET_DB_PASSWORD` from the environment.
+`scripts/postgres/03_superset_metadata.sql` prepares a separate database
+`superset_metadata` owned by login role `superset`. The role has no SUPERUSER,
+CREATEDB, CREATEROLE, REPLICATION, or BYPASSRLS privileges. It does not use the
+analytical `lab_db` database for Superset metadata. No Superset service, migrations,
+or administrator account are installed by this step.
 
-See [the root README](../README.md#superset-metadata-database) for commands,
-local secret storage, verification queries, and transaction limitations.
+This is a **psql script**, using `\if`, `\gexec`, and password handling; do not
+execute it as ordinary SQL in DBeaver. PostgreSQL's volume is already initialized,
+so `/docker-entrypoint-initdb.d/` is not used. Run manually against maintenance
+database `postgres` as `lab_user`, outside any transaction (`psql -1` is invalid):
+
+```sh
+docker cp scripts/postgres/03_superset_metadata.sql trino-postgre:/tmp/03_superset_metadata.sql
+docker compose exec postgres sh -c \
+  'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -f /tmp/03_superset_metadata.sql'
+```
+
+For a new role, psql prompts twice for its password without echoing it and sends
+an encrypted SCRAM verifier to PostgreSQL. Store that password in a password
+manager. For an existing role, there is no prompt and the password is preserved.
+The script refuses incompatible existing role privileges, role memberships,
+or database ownership/settings rather than silently changing them.
+
+For automated initialization, the optional `SUPERSET_DB_PASSWORD` environment
+variable accepts either the new password or a PostgreSQL SCRAM verifier. Pass
+only the environment variable's name through Docker, not its value on the command
+line. Do not enable SQL tracing or verbose logging; plaintext environment values
+are visible to administrators, and a plaintext SQL password assignment may be
+recorded by server auditing. Prefer the interactive `\password` method or an
+already generated SCRAM verifier. Never commit a password or verifier.
+
+Keep the actual login password in ignored `secrets/superset/metadata.env`
+under `SUPERSET_DB_PASSWORD` for the app. Use mode `600` and private directories
+with mode `700`. Do not replace it on a rerun.
+See [Superset setup](../docker/superset/README.md#local-secrets).
+A SCRAM verifier can initialize PostgreSQL, but cannot replace the actual
+login password in the Superset app's environment file.
+
+If this local credentials file is present, a non-interactive rerun is:
+
+```sh
+(
+  set -a
+  . ./secrets/superset/metadata.env
+  set +a
+  docker compose exec -T -e SUPERSET_DB_PASSWORD postgres sh -c \
+    'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -f -' \
+    < scripts/postgres/03_superset_metadata.sql
+)
+```
+
+The existing role's password is ignored on reruns, even if an environment value
+is supplied. Password rotation is a separate explicit operation; use an admin
+psql session and `\password superset` when intentionally rotating it, then update
+the local secret used by Superset.
+
+Verify as `lab_user` using DBeaver or psql:
+
+```sql
+SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+       rolreplication, rolbypassrls
+FROM pg_roles WHERE rolname = 'superset';
+
+SELECT datname, pg_get_userbyid(datdba) AS owner
+FROM pg_database WHERE datname = 'superset_metadata';
+```
+
+Expect LOGIN true, all listed administrative attributes false, and database
+owner `superset`. Test password authentication separately (enter the saved
+password when prompted):
+
+```sh
+docker compose exec postgres psql -X -h 127.0.0.1 -U superset \
+  -d superset_metadata -W -c 'SELECT current_database(), current_user;'
+```
+
+Role creation and password setup are transactional. `CREATE DATABASE` must run
+in auto-commit mode, so initialization cannot be one atomic transaction; if it
+fails after role creation, fix the cause and rerun. Session advisory locking
+serializes this script. Existing databases and their contents are never dropped,
+reinitialized, or migrated. This does not change cluster-wide PUBLIC privileges;
+the role is not a full isolation boundary from every other database.
+
+## Sample data
 
 ## Execution order
 
@@ -200,8 +282,7 @@ cross-server ID consistency without linked servers or a new Trino catalog.
 Separate checks are not a single atomic snapshot; run them without concurrent
 fixture modifications.
 
-After the `mssql_lab` catalog configuration is applied to Trino, the following
-anti-joins verify actual cross-server relationships. Both `admin` and `analyst`
+Use these Trino anti-joins to check the cross-server relationships. Both `admin` and `analyst`
 can run these SELECTs under the current policy. The seed scripts themselves
 do not configure or reload Trino catalogs.
 
@@ -232,11 +313,6 @@ the target tables while checking and inserting. Run during an idle lab session.
 If a file fails, stop and inspect the error; do not disable checks or delete data.
 A failed later file does not undo an already committed earlier file. Fix the
 underlying issue, then rerun. No Compose/Trino changes or volume cleanup are needed.
-
-The SQL Server seed script has been executed successfully: 10000 orders,
-30000 order items, and no orphan order items were verified. The federated
-customer/order JOIN has also been manually verified. This does not constitute
-a full rerun or validation of every initialization script.
 
 References: [PostgreSQL 17 error handling](https://www.postgresql.org/docs/17/plpgsql-errors-and-messages.html),
 [SQL Server XACT_ABORT](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-xact-abort-transact-sql?view=sql-server-ver16),
